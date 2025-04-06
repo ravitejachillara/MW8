@@ -9,6 +9,13 @@ fi
 # System Requirements Check
 check_system() {
     echo "Performing system checks..."
+
+    # OS Check (General Ubuntu)
+    . /etc/os-release
+    if [ "$ID" != "ubuntu" ]; then
+        echo "Error: Requires Ubuntu. Detected: $PRETTY_NAME"
+        exit 1
+    fi
     
     # RAM Check (4GB minimum)
     local RAM=$(free -m | awk '/Mem:/ {print $2}')
