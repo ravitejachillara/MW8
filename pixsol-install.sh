@@ -1,5 +1,6 @@
 #!/bin/bash
-# Permanent URL: https://github.com/ravitejachillara/pixerio/raw/main/pixsol-install.sh
+# Permanent installation script for pixerio.in
+# Run with: bash <(curl -fsSL https://github.com/ravitejachillara/pixerio/raw/main/pixsol-install.sh)
 
 set -euo pipefail
 
@@ -7,7 +8,7 @@ set -euo pipefail
 INSTALL_DIR="/opt/pixsol"
 SECURE_PREFIX="pixsol-$(openssl rand -hex 3)"
 
-# Install Docker if missing
+# Install Docker requirements
 install_docker() {
     if ! command -v docker &>/dev/null; then
         echo "🔧 Installing Docker..."
@@ -24,7 +25,7 @@ install_docker() {
     fi
 }
 
-# Generate secure compose file
+# Generate production-ready configuration
 generate_config() {
     cat <<EOL > docker-compose.yml
 version: '3.8'
@@ -56,6 +57,8 @@ services:
       - "traefik.http.routers.wp.rule=Host(\`at.pixerio.in\`)"
       - "traefik.http.routers.wp.tls.certresolver=le"
     restart: always
+    depends_on:
+      - ${SECURE_PREFIX}-database
 
   ${SECURE_PREFIX}-mautic:
     image: mautic/mautic:4.4
@@ -67,6 +70,8 @@ services:
       - "traefik.http.routers.mtc.rule=Host(\`mautic.pixerio.in\`)"
       - "traefik.http.routers.mtc.tls.certresolver=le"
     restart: always
+    depends_on:
+      - ${SECURE_PREFIX}-database
 
   ${SECURE_PREFIX}-n8n:
     image: n8nio/n8n:1.24
@@ -79,6 +84,8 @@ services:
     image: mariadb:11.0
     environment:
       MYSQL_ROOT_PASSWORD: $(openssl rand -base64 48)
+      MYSQL_USER: pixsoladmin
+      MYSQL_PASSWORD: $(openssl rand -base64 48)
     volumes:
       - db_data:/var/lib/mysql
     restart: always
@@ -89,8 +96,9 @@ volumes:
 EOL
 }
 
-# Main installation
+# Main installation process
 main() {
+    echo "🚀 Starting PixSol installation..."
     mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
     install_docker
     generate_config
@@ -101,9 +109,11 @@ main() {
     echo -e "- WordPress: https://at.pixerio.in"
     echo -e "- Mautic: https://mautic.pixerio.in"
     echo -e "- n8n: https://n8n.pixerio.in"
-    echo -e "\n🔑 Passwords stored in: ${INSTALL_DIR}/docker-compose.yml"
+    echo -e "\n🔑 Database credentials stored in: ${INSTALL_DIR}/docker-compose.yml"
 }
 
-# Run with error handling
-trap 'echo "🆘 Error occurred - contact support@pixerio.in" && exit 1' ERR
+# Error handling
+trap 'echo -e "\n🆘 Installation failed - contact support@pixerio.in" && exit 1' ERR
+
+# Execute installation
 main
