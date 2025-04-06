@@ -1,5 +1,4 @@
 #!/bin/bash
-set -eo pipefail
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -11,24 +10,33 @@ fi
 check_system() {
     echo "Performing system checks..."
     
-    # General Ubuntu check
+    # OS Check (General Ubuntu)
     . /etc/os-release
     if [ "$ID" != "ubuntu" ]; then
         echo "Error: Requires Ubuntu. Detected: $PRETTY_NAME"
         exit 1
     fi
 
-    # RAM Check (8GB minimum)
+    # RAM Check (4GB minimum)
     local RAM=$(free -m | awk '/Mem:/ {print $2}')
-    (( RAM < 8192 )) && { echo "Error: Minimum 8GB RAM required. Detected: ${RAM}MB"; exit 1; }
+    if [ $RAM -lt 4096 ]; then
+        echo "Error: Minimum 4GB RAM required. Detected: ${RAM}MB"
+        exit 1
+    fi
 
-    # Disk Check (50GB minimum)
+    # Disk Check (20GB minimum)
     local DISK=$(df -BG / | awk 'NR==2 {print $4}' | tr -d 'G')
-    (( DISK < 50 )) && { echo "Error: Minimum 50GB disk space required. Detected: ${DISK}GB"; exit 1; }
+    if [ $DISK -lt 20 ]; then
+        echo "Error: Minimum 20GB disk space required. Detected: ${DISK}GB"
+        exit 1
+    fi
 
-    # CPU Check (4 cores minimum)
+    # CPU Check (2 cores minimum)
     local CPU=$(nproc)
-    (( CPU < 4 )) && { echo "Error: Minimum 4 CPU cores required. Detected: $CPU cores"; exit 1; }
+    if [ $CPU -lt 2 ]; then
+        echo "Error: Minimum 2 CPU cores required. Detected: $CPU cores"
+        exit 1
+    fi
 }
 
 clean_previous() {
