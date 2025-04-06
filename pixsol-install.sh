@@ -10,13 +10,6 @@ fi
 check_system() {
     echo "Performing system checks..."
     
-    # Ubuntu Version Check
-    . /etc/os-release
-    if [ "$ID" != "ubuntu" ] || [ "$VERSION_ID" != "22.04.2" ]; then
-        echo "Error: Requires Ubuntu 22.04. Detected: $PRETTY_NAME"
-        exit 1
-    fi
-
     # RAM Check (4GB minimum)
     local RAM=$(free -m | awk '/Mem:/ {print $2}')
     if [ $RAM -lt 4096 ]; then
