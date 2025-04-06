@@ -1,5 +1,5 @@
 #!/bin/bash
-# Final working version with automatic latest images
+# Final working version with database healthcheck fixes
 # Run with: bash <(curl -fsSL https://github.com/ravitejachillara/pixerio/raw/main/pixsol-install.sh)
 
 set -euo pipefail
@@ -8,24 +8,11 @@ set -euo pipefail
 INSTALL_DIR="/opt/pixsol"
 SECURE_PREFIX="pixsol-$(openssl rand -hex 3)"
 
-# Install Docker with latest stable
-install_docker() {
-    if ! command -v docker &>/dev/null; then
-        echo "🔧 Installing Docker..."
-        curl -fsSL https://get.docker.com | sudo sh
-        sudo usermod -aG docker $USER
-        sudo systemctl enable --now docker
-    fi
+# Generate database credentials without special characters
+DB_ROOT_PASS=$(openssl rand -hex 24)
+DB_USER_PASS=$(openssl rand -hex 24)
 
-    if ! command -v docker-compose &>/dev/null; then
-        echo "🔧 Installing Docker Compose..."
-        sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-        -o /usr/local/bin/docker-compose
-        sudo chmod +x /usr/local/bin/docker-compose
-    fi
-}
-
-# Generate production config
+# Fixed Docker Compose configuration
 generate_config() {
     cat <<EOL > docker-compose.yml
 services:
@@ -50,7 +37,7 @@ services:
     environment:
       WORDPRESS_DB_HOST: ${SECURE_PREFIX}-database
       WORDPRESS_DB_USER: pixsoladmin
-      WORDPRESS_DB_PASSWORD: $(openssl rand -base64 24)
+      WORDPRESS_DB_PASSWORD: ${DB_USER_PASS}
     labels:
       - "traefik.http.routers.wp.rule=Host(\`at.pixerio.in\`)"
       - "traefik.http.routers.wp.tls.certresolver=le"
@@ -64,7 +51,7 @@ services:
     environment:
       MAUTIC_DB_HOST: ${SECURE_PREFIX}-database
       MAUTIC_DB_USER: pixsoladmin
-      MAUTIC_DB_PASSWORD: $(openssl rand -base64 24)
+      MAUTIC_DB_PASSWORD: ${DB_USER_PASS}
     labels:
       - "traefik.http.routers.mtc.rule=Host(\`mautic.pixerio.in\`)"
       - "traefik.http.routers.mtc.tls.certresolver=le"
@@ -83,16 +70,17 @@ services:
   ${SECURE_PREFIX}-database:
     image: mariadb:latest
     environment:
-      MYSQL_ROOT_PASSWORD: $(openssl rand -base64 48)
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS}
       MYSQL_USER: pixsoladmin
-      MYSQL_PASSWORD: $(openssl rand -base64 48)
+      MYSQL_PASSWORD: ${DB_USER_PASS}
+      MYSQL_DATABASE: pixsol_main
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p\${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
-      timeout: 2s
-      retries: 10
+      timeout: 5s
+      retries: 30
     restart: always
 
 volumes:
@@ -105,18 +93,29 @@ EOL
 main() {
     echo "🚀 Starting PixSol installation..."
     sudo mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
-    install_docker
+    
+    # Install Docker if missing
+    if ! command -v docker &>/dev/null; then
+        echo "🔧 Installing Docker..."
+        curl -fsSL https://get.docker.com | sudo sh
+        sudo systemctl enable --now docker
+        sleep 5  # Wait for Docker daemon
+    fi
+
     generate_config
     
-    echo "🔧 Starting services..."
+    echo "🔧 Starting services (this may take 5-10 minutes)..."
     sudo docker-compose up -d
     
     echo -e "\n✅ Installation Complete!"
-    echo -e "Access URLs (may take 2-5 minutes to become available):"
+    echo -e "Services will become available within 5-10 minutes as containers initialize"
+    echo -e "Access URLs:"
     echo -e "- WordPress: https://at.pixerio.in"
     echo -e "- Mautic: https://mautic.pixerio.in"
     echo -e "- n8n: https://n8n.pixerio.in"
-    echo -e "\n🔑 Passwords stored in: ${INSTALL_DIR}/docker-compose.yml"
+    echo -e "\n🔑 Database credentials:"
+    echo -e "Root Password: ${DB_ROOT_PASS}"
+    echo -e "User Password: ${DB_USER_PASS}"
 }
 
 # Error handling
