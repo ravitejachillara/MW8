@@ -1,5 +1,5 @@
 #!/bin/bash
-# Final fixed version for immediate Docker initialization
+# Final working version with automatic latest images
 # Run with: bash <(curl -fsSL https://github.com/ravitejachillara/pixerio/raw/main/pixsol-install.sh)
 
 set -euo pipefail
@@ -8,13 +8,13 @@ set -euo pipefail
 INSTALL_DIR="/opt/pixsol"
 SECURE_PREFIX="pixsol-$(openssl rand -hex 3)"
 
-# Fixed Docker installation
+# Install Docker with latest stable
 install_docker() {
     if ! command -v docker &>/dev/null; then
         echo "🔧 Installing Docker..."
         curl -fsSL https://get.docker.com | sudo sh
-        # Immediate group activation
-        sudo sg docker -c "echo 'Docker group activated'" || true
+        sudo usermod -aG docker $USER
+        sudo systemctl enable --now docker
     fi
 
     if ! command -v docker-compose &>/dev/null; then
@@ -23,23 +23,14 @@ install_docker() {
         -o /usr/local/bin/docker-compose
         sudo chmod +x /usr/local/bin/docker-compose
     fi
-    
-    # Verify Docker functionality
-    if ! docker ps >/dev/null 2>&1; then
-        echo "❌ Docker not functioning properly - trying manual activation..."
-        sudo systemctl enable --now docker
-        sleep 5
-    fi
 }
 
-# Enhanced service configuration
+# Generate production config
 generate_config() {
     cat <<EOL > docker-compose.yml
-version: '3.8'
-
 services:
   ${SECURE_PREFIX}-reverse-proxy:
-    image: traefik:v2.10
+    image: traefik:latest
     command:
       - --providers.docker
       - --entrypoints.web.address=:80
@@ -55,7 +46,7 @@ services:
     restart: always
 
   ${SECURE_PREFIX}-wordpress:
-    image: wordpress:6.5-php8.3-apache
+    image: wordpress:latest
     environment:
       WORDPRESS_DB_HOST: ${SECURE_PREFIX}-database
       WORDPRESS_DB_USER: pixsoladmin
@@ -69,7 +60,7 @@ services:
     restart: always
 
   ${SECURE_PREFIX}-mautic:
-    image: mautic/mautic:4.4
+    image: mautic/mautic:latest
     environment:
       MAUTIC_DB_HOST: ${SECURE_PREFIX}-database
       MAUTIC_DB_USER: pixsoladmin
@@ -83,14 +74,14 @@ services:
     restart: always
 
   ${SECURE_PREFIX}-n8n:
-    image: n8nio/n8n:1.24
+    image: n8nio/n8n:latest
     labels:
       - "traefik.http.routers.n8n.rule=Host(\`n8n.pixerio.in\`)"
       - "traefik.http.routers.n8n.tls.certresolver=le"
     restart: always
 
   ${SECURE_PREFIX}-database:
-    image: mariadb:11.0
+    image: mariadb:latest
     environment:
       MYSQL_ROOT_PASSWORD: $(openssl rand -base64 48)
       MYSQL_USER: pixsoladmin
@@ -110,39 +101,26 @@ volumes:
 EOL
 }
 
-# Robust installation process
+# Main installation flow
 main() {
     echo "🚀 Starting PixSol installation..."
-    
-    # Create installation directory
     sudo mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
-    
-    # Install Docker with verification
     install_docker
-    
-    # Generate configuration
     generate_config
     
-    # Start services with error reporting
-    if ! sudo docker-compose up -d; then
-        echo -e "\n❌ Container startup failed - checking logs..."
-        sudo docker-compose logs
-        exit 1
-    fi
-    
-    # Final verification
-    echo -e "\n🔍 Checking running containers..."
-    sudo docker-compose ps
+    echo "🔧 Starting services..."
+    sudo docker-compose up -d
     
     echo -e "\n✅ Installation Complete!"
-    echo -e "Access URLs:"
+    echo -e "Access URLs (may take 2-5 minutes to become available):"
     echo -e "- WordPress: https://at.pixerio.in"
     echo -e "- Mautic: https://mautic.pixerio.in"
     echo -e "- n8n: https://n8n.pixerio.in"
+    echo -e "\n🔑 Passwords stored in: ${INSTALL_DIR}/docker-compose.yml"
 }
 
 # Error handling
 trap 'echo -e "\n🆘 Installation failed - contact support@pixerio.in" && exit 1' ERR
 
-# Execute installation
+# Execute
 main
