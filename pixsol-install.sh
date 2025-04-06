@@ -97,42 +97,16 @@ get_user_input() {
 generate_compose() {
     echo "Generating Docker configuration..."
     mkdir -p /opt/appstack
-    
-    # Generate database passwords
-    MYSQL_ROOT_PASS=$(openssl rand -base64 16)
-    WP_DB_PASS=$(openssl rand -base64 16)
-    MAUTIC_DB_PASS=$(openssl rand -base64 16)
-    N8N_DB_PASS=$(openssl rand -base64 16)
 
-    # Create MySQL init script
-    cat > /opt/appstack/init.sql <<EOF
-CREATE DATABASE IF NOT EXISTS wordpress;
-CREATE DATABASE IF NOT EXISTS mautic;
-CREATE DATABASE IF NOT EXISTS n8n;
+    # Generate UNIQUE passwords for each service
+    MYSQL_ROOT_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    WP_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    MAUTIC_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    N8N_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
 
-CREATE USER 'wordpress'@'%' IDENTIFIED BY '${WP_DB_PASS}';
-GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@'%';
-
-CREATE USER 'mautic'@'%' IDENTIFIED BY '${MAUTIC_DB_PASS}';
-GRANT ALL PRIVILEGES ON mautic.* TO 'mautic'@'%';
-
-CREATE USER 'n8n'@'%' IDENTIFIED BY '${N8N_DB_PASS}';
-GRANT ALL PRIVILEGES ON n8n.* TO 'n8n'@'%';
-
-FLUSH PRIVILEGES;
-EOF
-
-    # Create Docker Compose file
+    # Create Docker Compose file with valid images
     cat > /opt/appstack/docker-compose.yml <<EOF
-version: '3'
-
-volumes:
-  mysql_data:
-  traefik_certs:
-
-networks:
-  proxy:
-    external: false
+version: '3.8'
 
 services:
   reverse-proxy:
@@ -159,21 +133,29 @@ services:
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASS}
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: ${WP_DB_PASS}
     volumes:
-      - "mysql_data:/var/lib/mysql"
-      - "/opt/appstack/init.sql:/docker-entrypoint-initdb.d/init.sql"
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
     networks:
       - proxy
 
   wordpress:
-    image: bitnami/wordpress:latest
+    image: wordpress:latest
     environment:
-      - WORDPRESS_DATABASE_HOST=mysql
-      - WORDPRESS_DATABASE_USER=wordpress
-      - WORDPRESS_DATABASE_PASSWORD=${WP_DB_PASS}
-      - WORDPRESS_USERNAME=${WP_USER}
-      - WORDPRESS_PASSWORD=${WP_PASS}
-      - WORDPRESS_EMAIL=${SSL_EMAIL}
+      WORDPRESS_DB_HOST: mysql
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASS}
+      WORDPRESS_DB_NAME: wordpress
+    depends_on:
+      mysql:
+        condition: service_healthy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.wp.rule=Host(\`${WP_SUBDOMAIN}\`)"
@@ -181,18 +163,17 @@ services:
       - "traefik.http.routers.wp.tls.certresolver=le"
     networks:
       - proxy
-    depends_on:
-      - mysql
 
   mautic:
-    image: bitnami/mautic:latest
+    image: mautic/mautic:latest
     environment:
-      - MAUTIC_DATABASE_HOST=mysql
-      - MAUTIC_DATABASE_USER=mautic
-      - MAUTIC_DATABASE_PASSWORD=${MAUTIC_DB_PASS}
-      - MAUTIC_ADMIN_USER=${MAUTIC_USER}
-      - MAUTIC_ADMIN_PASSWORD=${MAUTIC_PASS}
-      - MAUTIC_ADMIN_EMAIL=${SSL_EMAIL}
+      MAUTIC_DB_HOST: mysql
+      MAUTIC_DB_USER: root
+      MAUTIC_DB_PASSWORD: ${MYSQL_ROOT_PASS}
+      MAUTIC_DB_NAME: mautic
+    depends_on:
+      mysql:
+        condition: service_healthy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.mautic.rule=Host(\`${MAUTIC_SUBDOMAIN}\`)"
@@ -200,19 +181,18 @@ services:
       - "traefik.http.routers.mautic.tls.certresolver=le"
     networks:
       - proxy
-    depends_on:
-      - mysql
 
   n8n:
     image: n8nio/n8n:latest
     environment:
-      - DB_TYPE=mysql
-      - DB_MYSQLDB_HOST=mysql
-      - DB_MYSQLDB_USER=n8n
-      - DB_MYSQLDB_PASSWORD=${N8N_DB_PASS}
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASS}
+      DB_TYPE: mysql
+      DB_MYSQLDB_HOST: mysql
+      DB_MYSQLDB_USER: root
+      DB_MYSQLDB_PASSWORD: ${MYSQL_ROOT_PASS}
+      DB_MYSQLDB_DATABASE: n8n
+    depends_on:
+      mysql:
+        condition: service_healthy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.n8n.rule=Host(\`${N8N_SUBDOMAIN}\`)"
@@ -220,17 +200,29 @@ services:
       - "traefik.http.routers.n8n.tls.certresolver=le"
     networks:
       - proxy
-    depends_on:
-      - mysql
+
+volumes:
+  mysql_data:
+  traefik_certs:
+
+networks:
+  proxy:
+    driver: bridge
 EOF
 }
 
 start_services() {
     echo "Starting application stack..."
-    cd /opt/appstack
-    docker-compose up -d
+    cd /opt/appstack || exit 1
+    if docker-compose up -d; then
+        echo "Services started successfully"
+        return 0
+    else
+        echo "Failed to start services"
+        docker-compose logs --tail=50
+        exit 1
+    fi
 }
-
 show_credentials() {
     echo
     echo "========== DEPLOYMENT SUCCESSFUL =========="
