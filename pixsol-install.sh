@@ -1,4 +1,5 @@
 #!/bin/bash
+set -eo pipefail
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -9,59 +10,51 @@ fi
 # System Requirements Check
 check_system() {
     echo "Performing system checks..."
-
-    # OS Check (General Ubuntu)
+    
+    # General Ubuntu check
     . /etc/os-release
     if [ "$ID" != "ubuntu" ]; then
         echo "Error: Requires Ubuntu. Detected: $PRETTY_NAME"
         exit 1
     fi
-    
+
     # RAM Check (4GB minimum)
     local RAM=$(free -m | awk '/Mem:/ {print $2}')
-    if [ $RAM -lt 4096 ]; then
-        echo "Error: Minimum 4GB RAM required. Detected: ${RAM}MB"
-        exit 1
-    fi
+    (( RAM < 4096 )) && { echo "Error: Minimum 4GB RAM required. Detected: ${RAM}MB"; exit 1; }
 
     # Disk Check (20GB minimum)
     local DISK=$(df -BG / | awk 'NR==2 {print $4}' | tr -d 'G')
-    if [ $DISK -lt 20 ]; then
-        echo "Error: Minimum 20GB disk space required. Detected: ${DISK}GB"
-        exit 1
-    fi
+    (( DISK < 20 )) && { echo "Error: Minimum 20GB disk space required. Detected: ${DISK}GB"; exit 1; }
 
     # CPU Check (2 cores minimum)
     local CPU=$(nproc)
-    if [ $CPU -lt 2 ]; then
-        echo "Error: Minimum 2 CPU cores required. Detected: $CPU cores"
-        exit 1
-    fi
+    (( CPU < 2 )) && { echo "Error: Minimum 2 CPU cores required. Detected: $CPU cores"; exit 1; }
 }
 
-# Install Docker and Docker Compose
+clean_previous() {
+    echo "Cleaning previous installations..."
+    docker compose -f /opt/appstack/docker-compose.yml down --volumes --rmi all 2>/dev/null || true
+    rm -rf /opt/appstack
+}
+
 install_docker() {
     echo "Installing Docker components..."
     apt-get update
     apt-get install -y apt-transport-https ca-certificates curl software-properties-common
     
-    # Add Docker repository
+    # Add Docker repo
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
     
     # Install Docker
     apt-get update
     apt-get install -y docker-ce docker-ce-cli containerd.io
-    systemctl enable docker
-    systemctl start docker
+    systemctl enable --now docker
 
-    # Install Docker Compose
-    DOCKER_COMPOSE_VERSION="v2.23.0"
-    curl -SL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
+    # Install Docker Compose Plugin
+    apt-get install -y docker-compose-plugin
 }
 
-# Configure Firewall
 configure_firewall() {
     echo "Configuring firewall..."
     ufw allow 80/tcp
@@ -69,7 +62,6 @@ configure_firewall() {
     ufw --force enable
 }
 
-# User Input Prompts
 get_user_input() {
     echo
     read -p "Enter your email for SSL certificates: " SSL_EMAIL
@@ -93,24 +85,42 @@ get_user_input() {
     echo
 }
 
-# Generate Docker Compose File
 generate_compose() {
     echo "Generating Docker configuration..."
     mkdir -p /opt/appstack
+    cd /opt/appstack
 
-    # Generate UNIQUE passwords for each service
-    MYSQL_ROOT_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-    WP_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-    MAUTIC_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-    N8N_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    # Generate secure passwords
+    MYSQL_ROOT_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n1)
+    WP_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n1)
+    MAUTIC_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n1)
+    N8N_DB_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n1)
 
-    # Create Docker Compose file with valid images
-    cat > /opt/appstack/docker-compose.yml <<EOF
+    # SQL Initialization
+    cat > init.sql <<EOF
+CREATE DATABASE IF NOT EXISTS wordpress;
+CREATE DATABASE IF NOT EXISTS mautic;
+CREATE DATABASE IF NOT EXISTS n8n;
+
+CREATE USER 'wordpress'@'%' IDENTIFIED BY '${WP_DB_PASS}';
+CREATE USER 'mautic'@'%' IDENTIFIED BY '${MAUTIC_DB_PASS}';
+CREATE USER 'n8n'@'%' IDENTIFIED BY '${N8N_DB_PASS}';
+
+GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@'%';
+GRANT ALL PRIVILEGES ON mautic.* TO 'mautic'@'%';
+GRANT ALL PRIVILEGES ON n8n.* TO 'n8n'@'%';
+
+FLUSH PRIVILEGES;
+EOF
+
+    # Docker Compose
+    cat > docker-compose.yml <<EOF
 version: '3.8'
 
 services:
   reverse-proxy:
     image: traefik:v2.10
+    restart: unless-stopped
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
@@ -131,23 +141,23 @@ services:
 
   mysql:
     image: mysql:8.0
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASS}
-      MYSQL_DATABASE: wordpress
-      MYSQL_USER: wordpress
-      MYSQL_PASSWORD: ${WP_DB_PASS}
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 5s
-      timeout: 10s
+      interval: 10s
+      timeout: 5s
       retries: 10
     networks:
       - proxy
 
   wordpress:
     image: wordpress:latest
+    restart: unless-stopped
     environment:
       WORDPRESS_DB_HOST: mysql
       WORDPRESS_DB_USER: wordpress
@@ -166,10 +176,11 @@ services:
 
   mautic:
     image: mautic/mautic:latest
+    restart: unless-stopped
     environment:
       MAUTIC_DB_HOST: mysql
-      MAUTIC_DB_USER: root
-      MAUTIC_DB_PASSWORD: ${MYSQL_ROOT_PASS}
+      MAUTIC_DB_USER: mautic
+      MAUTIC_DB_PASSWORD: ${MAUTIC_DB_PASS}
       MAUTIC_DB_NAME: mautic
     depends_on:
       mysql:
@@ -184,12 +195,17 @@ services:
 
   n8n:
     image: n8nio/n8n:latest
+    restart: unless-stopped
     environment:
       DB_TYPE: mysql
       DB_MYSQLDB_HOST: mysql
-      DB_MYSQLDB_USER: root
-      DB_MYSQLDB_PASSWORD: ${MYSQL_ROOT_PASS}
+      DB_MYSQLDB_USER: n8n
+      DB_MYSQLDB_PASSWORD: ${N8N_DB_PASS}
       DB_MYSQLDB_DATABASE: n8n
+      N8N_HOST: ${N8N_SUBDOMAIN}
+      N8N_PROTOCOL: https
+      N8N_WEBHOOK_URL: https://${N8N_SUBDOMAIN}/
+      VUE_APP_URL_BASE_API: https://${N8N_SUBDOMAIN}/
     depends_on:
       mysql:
         condition: service_healthy
@@ -213,19 +229,18 @@ EOF
 
 start_services() {
     echo "Starting application stack..."
-    cd /opt/appstack || exit 1
-    if docker-compose up -d; then
-        echo "Services started successfully"
-        return 0
-    else
-        echo "Failed to start services"
-        docker-compose logs --tail=50
-        exit 1
-    fi
+    cd /opt/appstack
+    docker compose up -d
+
+    # Wait for n8n initialization
+    echo "Waiting for services to stabilize..."
+    sleep 30
+    docker compose logs n8n --tail=50
 }
+
 show_credentials() {
     echo
-    echo "========== DEPLOYMENT SUCCESSFUL =========="
+    echo "========== DEPLOYMENT COMPLETE =========="
     echo 
     echo "Access URLs:"
     echo "WordPress: https://${WP_SUBDOMAIN}"
@@ -238,15 +253,12 @@ show_credentials() {
     echo "n8n Access:      ${N8N_USER} / ${N8N_PASS}"
     echo
     echo "Database Root Password: ${MYSQL_ROOT_PASS}"
-    echo
     echo "==========================================="
-    echo
-    echo "Note: Allow 10-15 minutes for SSL certificates to generate"
-    echo "      after DNS records are configured."
 }
 
-# Main Execution
+# Execution Flow
 check_system
+clean_previous
 install_docker
 configure_firewall
 get_user_input
