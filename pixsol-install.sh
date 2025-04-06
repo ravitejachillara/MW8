@@ -12,7 +12,7 @@ check_system() {
     
     # Ubuntu Version Check
     . /etc/os-release
-    if [ "$ID" != "ubuntu" ] || [ "$VERSION_ID" != "22.04" ]; then
+    if [ "$ID" != "ubuntu" ] || [ "$VERSION_ID" != "22.04.2" ]; then
         echo "Error: Requires Ubuntu 22.04. Detected: $PRETTY_NAME"
         exit 1
     fi
