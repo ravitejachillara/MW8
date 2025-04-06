@@ -1,4 +1,5 @@
 #!/bin/bash
+set -eo pipefail
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -6,38 +7,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# System Requirements Check
-check_system() {
-    echo "Performing system checks..."
-    
-    # OS Check (General Ubuntu)
-    . /etc/os-release
-    if [ "$ID" != "ubuntu" ]; then
-        echo "Error: Requires Ubuntu. Detected: $PRETTY_NAME"
-        exit 1
-    fi
-
-    # RAM Check (4GB minimum)
-    local RAM=$(free -m | awk '/Mem:/ {print $2}')
-    if [ $RAM -lt 4096 ]; then
-        echo "Error: Minimum 4GB RAM required. Detected: ${RAM}MB"
-        exit 1
-    fi
-
-    # Disk Check (20GB minimum)
-    local DISK=$(df -BG / | awk 'NR==2 {print $4}' | tr -d 'G')
-    if [ $DISK -lt 20 ]; then
-        echo "Error: Minimum 20GB disk space required. Detected: ${DISK}GB"
-        exit 1
-    fi
-
-    # CPU Check (2 cores minimum)
-    local CPU=$(nproc)
-    if [ $CPU -lt 2 ]; then
-        echo "Error: Minimum 2 CPU cores required. Detected: $CPU cores"
-        exit 1
-    fi
-}
+# Removed all system checks
 
 clean_previous() {
     echo "Cleaning previous installations..."
@@ -50,16 +20,12 @@ install_docker() {
     apt-get update
     apt-get install -y apt-transport-https ca-certificates curl software-properties-common
     
-    # Add Docker repo
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
     
-    # Install Docker
     apt-get update
     apt-get install -y docker-ce docker-ce-cli containerd.io
     systemctl enable --now docker
-
-    # Install Docker Compose Plugin
     apt-get install -y docker-compose-plugin
 }
 
