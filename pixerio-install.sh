@@ -120,7 +120,7 @@ GRANT ALL PRIVILEGES ON n8n.* TO 'n8n'@'%';
 FLUSH PRIVILEGES;
 EOF
 
-    # Modified Docker Compose without n8n
+    # Modified Docker Compose with Traefik file provider
     cat > /opt/appstack/docker-compose.yml <<EOF
 version: '3.8'
 
@@ -130,6 +130,8 @@ services:
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/"
+      - "--providers.file.watch=true"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
       - "--certificatesresolvers.le.acme.email=${SSL_EMAIL}"
@@ -142,6 +144,7 @@ services:
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
       - "traefik_certs:/certs"
+      - "./n8n.yml:/etc/traefik/n8n.yml"
     networks:
       - proxy
 
@@ -204,15 +207,37 @@ networks:
   proxy:
     driver: bridge
 EOF
+
+    # Create Traefik configuration for n8n
+    cat > /opt/appstack/n8n.yml <<EOF
+http:
+  routers:
+    n8n:
+      entryPoints:
+        - "websecure"
+      rule: "Host(\`${N8N_SUBDOMAIN}\`)"
+      service: "n8n"
+      tls:
+        certResolver: le
+  
+  services:
+    n8n:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:5678/"
+EOF
 }
 
 install_n8n() {
     echo "Installing n8n directly via Node.js..."
     
     # Install Node.js
-    curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-    apt-get install -y nodejs build-essential
-    
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    apt-get install -y nodejs
+
+    # Update npm
+    npm install -g npm@latest
+
     # Install PM2 process manager
     npm install pm2 -g
 
@@ -222,14 +247,15 @@ install_n8n() {
     # Install n8n
     sudo -u n8n bash <<EOF
     cd /opt/n8n
-    npm install n8n
+    npm install n8n@latest
 EOF
 
     # Create systemd service
     cat > /etc/systemd/system/n8n.service <<EOF
 [Unit]
 Description=n8n Service
-After=network.target mysql.service
+After=network.target docker.service
+Requires=docker.service
 
 [Service]
 User=n8n
@@ -243,6 +269,8 @@ Environment=N8N_HOST=${N8N_SUBDOMAIN}
 Environment=N8N_PROTOCOL=https
 Environment=N8N_WEBHOOK_URL=https://${N8N_SUBDOMAIN}/
 ExecStart=/usr/bin/pm2 start /opt/n8n/node_modules/n8n/bin/n8n -- start
+ExecReload=/usr/bin/pm2 reload n8n
+ExecStop=/usr/bin/pm2 stop n8n
 Restart=always
 
 [Install]
@@ -252,53 +280,20 @@ EOF
     # Enable and start service
     systemctl daemon-reload
     systemctl enable n8n
-    systemctl start n8n
-
-    # Add Traefik configuration
-    cat >> /opt/appstack/docker-compose.yml <<EOF
-
-  n8n-proxy:
-    image: traefik:v2.10
-    command:
-      - "--providers.file.directory=/etc/traefik/"
-      - "--providers.file.watch=true"
-    volumes:
-      - ./n8n.yml:/etc/traefik/n8n.yml
-    ports:
-      - "5678:80"
-    networks:
-      - proxy
-EOF
-
-    # Create Traefik configuration
-    cat > /opt/appstack/n8n.yml <<EOF
-http:
-  routers:
-    n8n:
-      entryPoints:
-        - "web"
-      rule: "Host(\`${N8N_SUBDOMAIN}\`)"
-      service: "n8n"
-  
-  services:
-    n8n:
-      loadBalancer:
-        servers:
-          - url: "http://host.docker.internal:5678/"
-EOF
 }
 
-# Modify start_services
 start_services() {
     echo "Starting Docker services..."
     cd /opt/appstack || exit 1
-    docker-compose up -d
+    docker compose up -d
     
     echo "Waiting for MySQL to initialize..."
-    sleep 30
+    while ! docker compose exec mysql mysqladmin ping -h localhost --silent; do
+        sleep 5
+    done
     
     echo "Starting n8n service..."
-    systemctl restart n8n
+    systemctl start n8n
 }
 
 # Modify show_credentials
