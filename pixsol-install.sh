@@ -133,11 +133,11 @@ services:
   n8n:
     image: n8nio/n8n
     environment:
-      DB_TYPE: postgresdb
+      DB_TYPE: postgres
       DB_POSTGRESDB_HOST: n8n-db
       DB_POSTGRESDB_PORT: 5432
       DB_POSTGRESDB_DATABASE: n8n
-      DB_POSTGRESDB_USER: root
+      DB_POSTGRESDB_USER: postgres
       DB_POSTGRESDB_PASSWORD: $DB_PASS
       N8N_BASIC_AUTH_ACTIVE: "true"
       N8N_BASIC_AUTH_USER: admin
@@ -155,6 +155,7 @@ services:
   n8n-db:
     image: postgres:15
     environment:
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: $DB_PASS
       POSTGRES_DB: n8n
     networks:
