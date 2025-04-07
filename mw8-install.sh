@@ -25,7 +25,7 @@ mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 # Ask for domain and app selection
-read -rp $'\nEnter base domain (e.g., example.com): ' BASE_DOMAIN
+read -rp $'\nEnter base domain (e.g., example.com, sub-domains will be created based on this): ' BASE_DOMAIN
 read -rp $'\nEnter admin email (for SSL certs and alerts): ' ADMIN_EMAIL
 
 printf "\nSelect applications to install:\n"
