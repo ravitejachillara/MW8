@@ -1,0 +1,148 @@
+#!/bin/bash
+
+# --- Config Defaults ---
+default_email="rajeshvyas71@gmail.com"
+default_web_root="/var/www"
+log_file="/root/setup-log.txt"
+
+# --- Ask for Inputs ---
+echo -n "Enter domains (comma-separated): "
+read domain_input
+domains=$(echo "$domain_input" | tr ',' ' ')
+
+read -p "Enter email for SSL (default: $default_email): " ssl_email
+ssl_email=${ssl_email:-$default_email}
+
+read -p "Enter MySQL root password (leave blank to auto-generate): " mysql_root_pass
+if [[ -z "$mysql_root_pass" ]]; then
+    mysql_root_pass=$(openssl rand -base64 12)
+    echo "MySQL root password auto-generated: $mysql_root_pass"
+fi
+
+# --- Update & Install Stack ---
+echo "[+] Installing packages..."
+apt update && apt install -y nginx php8.2 php8.2-{fpm,mysql,cli,xml,curl,zip,mbstring} mariadb-server curl unzip php8.2-gd php8.2-bcmath php8.2-intl php8.2-soap certbot python3-certbot-nginx nodejs npm pwgen pm2
+
+# Setup MySQL Root Password
+echo "[+] Configuring MySQL..."
+mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${mysql_root_pass}'; FLUSH PRIVILEGES;"
+
+# Loop through domains
+port_offset=0
+for domain in $domains; do
+    echo "[+] Setting up domain: $domain"
+
+    web_root="$default_web_root/$domain"
+    mkdir -p "$web_root" && chown -R www-data:www-data "$web_root"
+
+    cred_file="/root/${domain}-creds.txt"
+    echo "# Credentials for $domain" > "$cred_file"
+
+    # --- WordPress Setup ---
+    wp_dir="$web_root/wp"
+    db_wp="wp_${domain//./_}"
+    user_wp="wpuser_${RANDOM}"
+    pass_wp=$(openssl rand -base64 12)
+
+    mysql -uroot -p"$mysql_root_pass" -e "CREATE DATABASE IF NOT EXISTS \`${db_wp}\`;
+      CREATE USER IF NOT EXISTS '${user_wp}'@'localhost' IDENTIFIED BY '${pass_wp}';
+      GRANT ALL PRIVILEGES ON \`${db_wp}\`.* TO '${user_wp}'@'localhost';"
+
+    wget -q https://wordpress.org/latest.tar.gz -O /tmp/wp.tar.gz
+    tar -xzf /tmp/wp.tar.gz -C /tmp/
+    rsync -a /tmp/wordpress/ "$wp_dir"
+    cp "$wp_dir/wp-config-sample.php" "$wp_dir/wp-config.php"
+    sed -i "s/database_name_here/${db_wp}/" "$wp_dir/wp-config.php"
+    sed -i "s/username_here/${user_wp}/" "$wp_dir/wp-config.php"
+    sed -i "s/password_here/${pass_wp}/" "$wp_dir/wp-config.php"
+    chown -R www-data:www-data "$wp_dir"
+
+    echo "[WordPress] installed at https://${domain}/wp" >> "$cred_file"
+    echo "DB: $db_wp | User: $user_wp | Pass: $pass_wp" >> "$cred_file"
+
+    # --- Mautic Setup ---
+    mautic_dir="$web_root/mautic"
+    db_m="mautic_${domain//./_}"
+    user_m="muser_${RANDOM}"
+    pass_m=$(openssl rand -base64 12)
+
+    mysql -uroot -p"$mysql_root_pass" -e "CREATE DATABASE IF NOT EXISTS \`${db_m}\`;
+      CREATE USER IF NOT EXISTS '${user_m}'@'localhost' IDENTIFIED BY '${pass_m}';
+      GRANT ALL PRIVILEGES ON \`${db_m}\`.* TO '${user_m}'@'localhost';"
+
+    cd /tmp && curl -sS https://www.mautic.org/download/latest | tar xz
+    rsync -a mautic/ "$mautic_dir"
+    chown -R www-data:www-data "$mautic_dir"
+
+    echo "[Mautic] installed at https://${domain}/mautic" >> "$cred_file"
+    echo "DB: $db_m | User: $user_m | Pass: $pass_m" >> "$cred_file"
+
+    # --- N8N Setup ---
+    n8n_user="admin"
+    n8n_pass=$(openssl rand -base64 12)
+    port_n8n=$((5678 + port_offset))
+    port_offset=$((port_offset + 1))
+
+    export N8N_BASIC_AUTH_ACTIVE=true
+    export N8N_BASIC_AUTH_USER="$n8n_user"
+    export N8N_BASIC_AUTH_PASSWORD="$n8n_pass"
+    export N8N_PORT=$port_n8n
+    export WEBHOOK_URL="https://${domain}/n8n/"
+
+    pm2 start n8n --name "n8n-${domain}" --env production --interpreter bash -- n8n
+    pm2 save
+
+    echo "[N8N] proxied at https://${domain}/n8n/" >> "$cred_file"
+    echo "User: $n8n_user | Pass: $n8n_pass | Port: $port_n8n" >> "$cred_file"
+
+    # --- SSL & Nginx ---
+    certbot certonly --nginx -d "$domain" --agree-tos --email "$ssl_email" --non-interactive
+
+    cat > "/etc/nginx/sites-available/${domain}" <<EOF
+server {
+    listen 80;
+    server_name $domain;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $domain;
+
+    ssl_certificate /etc/letsencrypt/live/$domain/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
+
+    root $web_root;
+    index index.php index.html;
+
+    location /wp {
+        try_files \$uri \$uri/ /wp/index.php?\$args;
+    }
+
+    location /mautic {
+        try_files \$uri \$uri/ /mautic/index.php?\$args;
+    }
+
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+    }
+
+    location /n8n/ {
+        proxy_pass http://localhost:$port_n8n/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOF
+
+    ln -sf "/etc/nginx/sites-available/${domain}" "/etc/nginx/sites-enabled/"
+    nginx -t && systemctl reload nginx
+
+    echo "[+] $domain setup complete. Credentials saved to $cred_file"
+done
+
+echo "[✔] All done. Logs saved at $log_file"
