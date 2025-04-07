@@ -58,7 +58,7 @@ services:
   traefik:
     image: traefik:latest
     command:
-      - "--api.dashboard=true"
+      - "--api.dashboard="
       - "--providers.docker=true"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
@@ -139,7 +139,7 @@ services:
       DB_POSTGRESDB_DATABASE: n8n
       DB_POSTGRESDB_USER: root
       DB_POSTGRESDB_PASSWORD: $DB_PASS
-      N8N_BASIC_AUTH_ACTIVE: true
+      N8N_BASIC_AUTH_ACTIVE: "true"
       N8N_BASIC_AUTH_USER: admin
       N8N_BASIC_AUTH_PASSWORD: $ADMIN_PASS
     labels:
