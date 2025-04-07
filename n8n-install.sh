@@ -1,47 +1,38 @@
 #!/bin/bash
 
-set -e
+# Update system
+apt update && apt upgrade -y
 
-DOMAIN="n8n.pixerio.in"  # change this to your actual domain
-EMAIL="rajeshvyas71@gmail.com"      # email for Let's Encrypt
+# Create user for n8n
+useradd -m -s /bin/bash n8nuser
+usermod -aG sudo n8nuser
 
-echo "Updating system packages..."
-sudo apt update && sudo apt upgrade -y
+# Install dependencies
+apt install -y curl nginx certbot python3-certbot-nginx build-essential
 
-echo "Installing Node.js (LTS)..."
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install -y nodejs build-essential
+# Install Node.js 20.x (the one n8n needs)
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
 
-echo "Installing PM2 for process management..."
-sudo npm install pm2@latest -g
+# Install pm2 globally
+npm install -g pm2
 
-echo "Installing NGINX..."
-sudo apt install nginx -y
-
-echo "Installing Certbot for SSL..."
-sudo apt install certbot python3-certbot-nginx -y
-
-echo "Creating n8n user..."
-sudo adduser --disabled-password --gecos "" n8nuser || true
-
-echo "Switching to n8n user and installing n8n..."
-sudo -u n8nuser bash << EOF
+# Switch to n8nuser and install n8n
+sudo -i -u n8nuser bash << EOF
 cd ~
 npm install n8n -g
-EOF
-
-echo "Creating PM2 service for n8n..."
-sudo -u n8nuser bash << EOF
 pm2 start n8n --name n8n -- start
-pm2 startup systemd -u n8nuser --hp /home/n8nuser
 pm2 save
 EOF
 
-echo "Setting up NGINX reverse proxy..."
-sudo tee /etc/nginx/sites-available/n8n <<EOF
+# Setup pm2 startup for systemd
+env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u n8nuser --hp /home/n8nuser
+
+# Configure NGINX reverse proxy to n8n running on port 5678
+cat << 'EOL' > /etc/nginx/sites-available/n8n
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name your.server.ip.here;
 
     location / {
         proxy_pass http://localhost:5678;
@@ -51,12 +42,14 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-EOF
+EOL
 
-sudo ln -s /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/n8n
-sudo nginx -t && sudo systemctl reload nginx
+ln -s /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/n8n
+rm /etc/nginx/sites-enabled/default
+nginx -t && systemctl reload nginx
 
-echo "Obtaining SSL Certificate for $DOMAIN..."
-sudo certbot --nginx --non-interactive --agree-tos --redirect -d $DOMAIN -m $EMAIL
+# Setup SSL with certbot (if domain is used)
+# certbot --nginx -d your.domain.com
 
-echo "✅ Done! n8n should now be live at https://$DOMAIN"
+echo "✅ n8n installed and running via pm2 + reverse proxied via NGINX"
+echo "Visit http://your.server.ip.here or use certbot to add SSL"
