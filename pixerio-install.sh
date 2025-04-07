@@ -23,9 +23,21 @@ function gen_pass() {
 
 function install_base() {
   log "Installing base packages..."
+
   apt update -y
-  apt install -y nginx mariadb-server php8.2 php8.2-{cli,common,mysql,xml,gd,curl,mbstring,zip,fpm} curl unzip wget software-properties-common lsb-release ca-certificates apt-transport-https gnupg2 certbot python3-certbot-nginx nodejs npm
+  apt install -y software-properties-common curl unzip wget gnupg2 ca-certificates lsb-release apt-transport-https
+
+  # Add PHP repo
+  add-apt-repository ppa:ondrej/php -y
+  apt update -y
+
+  # Install PHP 8.2 and extensions
+  apt install -y php8.2 php8.2-cli php8.2-common php8.2-mysql php8.2-xml php8.2-gd php8.2-curl php8.2-mbstring php8.2-zip php8.2-fpm
+
+  # Other core services
+  apt install -y nginx mariadb-server certbot python3-certbot-nginx
 }
+
 
 function install_node() {
   curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
