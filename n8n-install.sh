@@ -1,55 +1,92 @@
 #!/bin/bash
 
-# Update system
+set -e
+
+DOMAIN="n8n.pixerio.in"
+EMAIL="rajeshvyas71@gmail.com"
+N8N_PORT=5678
+
+echo "Updating system..."
 apt update && apt upgrade -y
 
-# Create user for n8n
-useradd -m -s /bin/bash n8nuser
-usermod -aG sudo n8nuser
+echo "Installing Docker, Docker Compose, and dependencies..."
+apt install -y docker.io docker-compose ufw fail2ban nginx certbot python3-certbot-nginx curl gnupg2 ca-certificates lsb-release software-properties-common
 
-# Install dependencies
-apt install -y curl nginx certbot python3-certbot-nginx build-essential
+echo "Creating Docker network..."
+docker network create n8n-network || true
 
-# Install Node.js 20.x (the one n8n needs)
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt install -y nodejs
+echo "Creating directories for persistent data..."
+mkdir -p /opt/n8n/.n8n
+chown -R 1000:1000 /opt/n8n/.n8n
 
-# Install pm2 globally
-npm install -g pm2
-
-# Switch to n8nuser and install n8n
-sudo -i -u n8nuser bash << EOF
-cd ~
-npm install n8n -g
-pm2 start n8n --name n8n -- start
-pm2 save
+echo "Creating Docker Compose file..."
+cat <<EOF > /opt/n8n/docker-compose.yml
+version: "3.7"
+services:
+  n8n:
+    image: n8nio/n8n
+    restart: always
+    ports:
+      - "${N8N_PORT}:5678"
+    environment:
+      - N8N_HOST=${DOMAIN}
+      - N8N_PORT=5678
+      - WEBHOOK_TUNNEL_URL=https://${DOMAIN}
+      - N8N_PROTOCOL=https
+      - TZ=Asia/Kolkata
+    volumes:
+      - /opt/n8n/.n8n:/home/node/.n8n
+    networks:
+      - n8n-network
+networks:
+  n8n-network:
+    external: true
 EOF
 
-# Setup pm2 startup for systemd
-env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u n8nuser --hp /home/n8nuser
+echo "Starting n8n container..."
+cd /opt/n8n
+docker-compose up -d
 
-# Configure NGINX reverse proxy to n8n running on port 5678
-cat << 'EOL' > /etc/nginx/sites-available/n8n
+echo "Configuring Nginx..."
+cat <<EOF > /etc/nginx/sites-available/n8n
 server {
     listen 80;
-    server_name your.server.ip.here;
+    server_name ${DOMAIN};
 
     location / {
-        proxy_pass http://localhost:5678;
+        proxy_pass http://localhost:${N8N_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
-EOL
+EOF
 
 ln -s /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/n8n
-rm /etc/nginx/sites-enabled/default
+rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 
-# Setup SSL with certbot (if domain is used)
-# certbot --nginx -d your.domain.com
+echo "Installing SSL certificate with Let's Encrypt..."
+certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos -m ${EMAIL}
 
-echo "✅ n8n installed and running via pm2 + reverse proxied via NGINX"
-echo "Visit http://your.server.ip.here or use certbot to add SSL"
+echo "Setting up firewall rules..."
+ufw allow OpenSSH
+ufw allow 'Nginx Full'
+ufw --force enable
+
+echo "Configuring Fail2Ban..."
+cat <<EOF > /etc/fail2ban/jail.d/ssh.conf
+[sshd]
+enabled = true
+EOF
+
+systemctl enable fail2ban
+systemctl restart fail2ban
+
+echo "All set! n8n is now live at https://${DOMAIN}"
+
+echo "To view logs: cd /opt/n8n && docker-compose logs -f"
